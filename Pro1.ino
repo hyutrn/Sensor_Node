@@ -8,10 +8,10 @@
 //              bằng ESP-NOW                     //
 ///////////////////////////////////////////////////         
 #include <Wire.h>
-#include <DHT.h>                                    //thu vien cho cam bien DHT11
-#include <WiFi.h>
-#include <Adafruit_SSD1306.h>
 #include <esp_now.h>
+#include <WiFi.h>
+#include <DHT.h>                                    //thu vien cho cam bien DHT11
+#include <Adafruit_SSD1306.h>
 
 //config cho Oled SSD1306
 #define SCREEN_WIDTH 128 // Chiều rộng màn hình OLED
@@ -28,53 +28,70 @@ int valueMois;
 #define DHTTYPE DHT11                               // Khai báo loại cảm biến DHT11
 DHT dht(DHTPIN, DHTTYPE);
 float humidity;                                     // Khai báo biến lưu trữ độ ẩm
-float temperature;                                  // Khai báo biến lưu trữ nhiệt độ
+float temperature;     
 
-//Config ESP-NOW
+// REPLACE WITH YOUR RECEIVER MAC Address
+//24:0A:C4:C5:97:24
+uint8_t broadcastAddress[] = {0x24, 0x0A, 0xC4, 0xC5, 0x97, 0x24};
 
-const char* ssid = "QiQi";
-const char* password = "UyenLe2401";
-
-#define CHANNEL 1 // Kênh ESP-NOW
-typedef struct __attribute__((packed)) {
+// Structure example to send data
+// Must match the receiver structure
+typedef struct struct_message {
   float temperature;
   float humidity;
   float moisture;
-} SensorData;
-SensorData sensorData;
-// Địa chỉ MAC của ESP32 nhận dữ liệu 3C:E9:0E:86:C4:B4
-uint8_t receiverMACAddress[] = {0x3C, 0xE9, 0x0E, 0x86, 0xC4, 0xB4}; // Thay bằng địa chỉ MAC thực của ESP32 nhận
-// Khai báo hàm callback gửi dữ liệu qua ESP-NOW
-void sendData(const uint8_t *macAddr, esp_now_send_status_t status) {
-  // Không cần thực hiện thêm hành động trong callback này
+} struct_message;
+
+// Create a struct_message called myData
+struct_message myData;
+
+esp_now_peer_info_t peerInfo;
+
+// callback when data is sent
+void OnDataSent(const uint8_t *mac_addr, esp_now_send_status_t status) {
+  Serial.print("\r\nLast Packet Send Status:\t");
+  Serial.println(status == ESP_NOW_SEND_SUCCESS ? "Delivery Success" : "Delivery Fail");
 }
-
-
+ 
 void setup() {
+  // Init Serial Monitor
   Serial.begin(115200);
-  //Khoi tao Oled 
+  
+    //Khoi tao Oled 
   display.begin(SSD1306_SWITCHCAPVCC, 0x3C);
+  
   //Moisture sensor
   analogReadResolution(12);                         // set ADC resolution to 12 bits (0-4095) 
   pinMode(moisturePin, INPUT);
+  
   //Tempurate sensor 
   dht.begin();
-  //ESP-NOW
-  WiFi.mode(WIFI_STA); // Chế độ Station (Client)
-  WiFi.begin(ssid, password);
-  while (WiFi.status() != WL_CONNECTED) {
-    delay(1000);
-    Serial.println("Connecting to WiFi...");
-  }
-  Serial.println("Connected to WiFi");
+  
+  // Set device as a Wi-Fi Station
+  WiFi.mode(WIFI_STA);
 
+  // Init ESP-NOW
   if (esp_now_init() != ESP_OK) {
     Serial.println("Error initializing ESP-NOW");
     return;
   }
-  esp_now_register_send_cb(sendData); // Đăng ký callback gửi dữ liệu
-}
 
+  // Once ESPNow is successfully Init, we will register for Send CB to
+  // get the status of Trasnmitted packet
+  esp_now_register_send_cb(OnDataSent);
+  
+  // Register peer
+  memcpy(peerInfo.peer_addr, broadcastAddress, 6);
+  peerInfo.channel = 0;  
+  peerInfo.encrypt = false;
+  
+  // Add peer        
+  if (esp_now_add_peer(&peerInfo) != ESP_OK){
+    Serial.println("Failed to add peer");
+    return;
+  }
+}
+ 
 void loop() {
   //Doc nhiet do va do am tu DHT11
   temperature = dht.readTemperature();
@@ -88,33 +105,39 @@ void loop() {
   //Doc do am dat tu sensor
   valueMois = analogRead(moisturePin);
   moisture = (100-((valueMois/4095.00)*100));
+  
+  // Set values to send
+  myData.temperature = temperature;
+  myData.humidity = humidity;
+  myData.moisture = moisture;
+  
+  // Send message via ESP-NOW
+  esp_err_t result = esp_now_send(broadcastAddress, (uint8_t *) &myData, sizeof(myData));
+   
+  if (result == ESP_OK) {
+    Serial.println("Sent with success");
+  }
+  else {
+    Serial.println("Error sending the data");
+  }
 
-  //Gửi dữ liệu đến ESP32 Gateway
-  sensorData.temperature = temperature;
-  sensorData.humidity = humidity;
-  sensorData.moisture = moisture;
-  sendData(NULL, ESP_NOW_SEND_SUCCESS);
-
-  //In serial
-  Serial.print("Nhiet do: ");
-  Serial.print(temperature);
-  Serial.println(" ºC ");
-  Serial.print("Do am khong khi: ");
-  Serial.print(humidity);
-  Serial.println(" % ");
-  Serial.print("Do am dat: ");
-  Serial.print(moisture);
-  Serial.println(" % ");
-  Serial.println(WiFi.macAddress());
   //Hien thi Oled
   display.clearDisplay(); // Xóa màn hình
-
   display.setTextSize(1); // Kích thước chữ
   display.setTextColor(SSD1306_WHITE); // Màu chữ
   display.setCursor(0, 0); // Vị trí con trỏ
-  display.println("Nhiet do: " + String(temperature) + " C");
-  display.println("Do am khong khi: " + String(humidity) + " %");
-  display.println("Do am dat: " + String(moisture) + " %");
+  display.println(" ");
+  display.println(" ");
+  display.println("Temperature: " + String(temperature) + " C");
+  display.println("Humidity: " + String(humidity) + " %");
+  display.println("Moisture: " + String(moisture) + " %");
+  display.println("Status ESP-NOW:");
+  if(result == ESP_OK) {
+    display.println("Send data successfull");
+  }
+  else {
+    display.println("Send data fail");
+  }
   display.display(); // Hiển thị lên màn hình
-  delay(5000);
+  delay(2000);
 }
